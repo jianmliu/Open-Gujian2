@@ -20,8 +20,18 @@ function loadTexture(url, charStyle) {
   const t = texLoader.load(url);
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.wrapS = t.wrapT = charStyle ? THREE.MirroredRepeatWrapping : THREE.RepeatWrapping;
   if (charStyle) t.flipY = false;
+  return t;
+}
+
+async function loadTextureAsync(url, charStyle) {
+  const t = await texLoader.loadAsync(url);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  t.wrapS = t.wrapT = charStyle ? THREE.MirroredRepeatWrapping : THREE.RepeatWrapping;
+  if (charStyle) t.flipY = false;
+  t.needsUpdate = true;
   return t;
 }
 
@@ -42,11 +52,14 @@ export async function loadCharProto(id) {
   geo.setIndex(new THREE.BufferAttribute(new Uint32Array(buf, o.idx, ni), 1));
 
   const texKeys = Object.keys(meta.tex);
-  const mats = texKeys.map((k) => new THREE.MeshStandardMaterial({
-    map: loadTexture(CHAR_BASE + meta.tex[k], true),
+  const loadedTexs = await Promise.all(
+    texKeys.map((k) => loadTextureAsync(CHAR_BASE + meta.tex[k], true))
+  );
+  const mats = texKeys.map((k, i) => new THREE.MeshStandardMaterial({
+    map: loadedTexs[i],
     side: THREE.DoubleSide,
     alphaTest: 0.42,
-    roughness: 0.92, metalness: 0.0, envMapIntensity: 0.45,
+    roughness: 0.88, metalness: 0.0, envMapIntensity: 0.45,
   }));
   const matOf = {};
   texKeys.forEach((k, i) => { matOf[k] = i; });

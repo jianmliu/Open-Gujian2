@@ -31,7 +31,11 @@ export async function loadAnim(name) {
     tracks.set(bone, out);
   }
   const names = [];
-  for (const [k, v] of tracks) if (v.r) names.push(k);
+  for (const [k, v] of tracks) {
+    // 动画轨道烘焙自 101.xsm：仅驱动全角色共用的 Bip01 标准人体主骨架，
+    // 避免 101 的编号辅助骨（Bone01..Bone110）覆写 102..107 不同部位的头发/披风/裙摆骨骼。
+    if (v.r && k.startsWith('Bip01')) names.push(k);
+  }
   const clip = {
     name, dur: data.dur, loop: data.loop, tracks, names,
     stride: data.stride || 0, cphase: data.cphase || 0,

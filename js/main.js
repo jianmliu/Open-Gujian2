@@ -164,6 +164,7 @@ async function boot() {
     window.__step = 'anims';
     setLoad(84, '传授举止身法…');
     G.anims = await loadAnims(['idle', 'walk', 'run', 'sprint', 'attack', 'jump']);
+    generateCharPortraits();
     window.__step = 'props';
     setLoad(88, '搬来屋舍桥梁（建立 OBB 碰撞网格）…');
     G.props = null;
@@ -233,6 +234,152 @@ function preloadIcons() {
   for (let i = 0; i < ui.story; i++)
     G.cfg.story.push(`assets/ui/story/story_${String(i).padStart(2, '0')}.png`);
   G.cfg.faces = NPC_DEFS.map((n) => n.face);
+}
+
+const PORTRAIT_THEMES = {
+  '101': { bgInner: '#6b2d1a', bgOuter: '#1c0d0a', rim: '#f6ad55', badge: '火·腾蛇', camX: -0.04, camY: 0.068, dist: 0.48 },
+  '102': { bgInner: '#5e2328', bgOuter: '#1a0b0e', rim: '#fc8181', badge: '金·天狼', camX: 0.04, camY: 0.062, dist: 0.47 },
+  '103': { bgInner: '#1e3a5f', bgOuter: '#0a1526', rim: '#63b3ed', badge: '水·太阴', camX: -0.03, camY: 0.065, dist: 0.45 },
+  '104': { bgInner: '#1d4d3c', bgOuter: '#091c15', rim: '#68d391', badge: '木·鸾鸟', camX: 0.03, camY: 0.064, dist: 0.46 },
+  '105': { bgInner: '#3b2554', bgOuter: '#120a1c', rim: '#b794f4', badge: '廉贞', camX: 0.04, camY: 0.068, dist: 0.47 },
+  '106': { bgInner: '#1d4549', bgOuter: '#09191c', rim: '#4fd1c5', badge: '大偃师', camX: -0.06, camY: 0.068, dist: 0.48 },
+  '107': { bgInner: '#2e1d59', bgOuter: '#0e081f', rim: '#9f7aea', badge: '紫微', camX: 0.05, camY: 0.068, dist: 0.48 },
+};
+
+/**
+ * 原版 assets/ui/face/face_*.png 是 3D 模型的展开 UV 贴图（平铺人脸面具），直接放入 <img> 会严重变形。
+ * 此处直接利用已加载的 3D 骨骼角色网格与材质，在离屏 WebGLRenderTarget 中渲染每位角色的三维半身胸像，
+ * 合成仙侠底纹与星蕴徽记后替换所有 HUD / 队伍栏 / 对话框头像。
+ */
+function generateCharPortraits() {
+  if (!G.renderer) return;
+  const SIZE = 256;
+  const rt = new THREE.WebGLRenderTarget(SIZE, SIZE, {
+    format: THREE.RGBAFormat,
+    type: THREE.UnsignedByteType,
+    depthBuffer: true,
+  });
+  const portScene = new THREE.Scene();
+  const amb = new THREE.AmbientLight(0xfff5e8, 1.55);
+  const keyLight = new THREE.DirectionalLight(0xfff0d8, 2.35);
+  keyLight.position.set(-0.5, 0.7, -1.2);
+  const fillLight = new THREE.DirectionalLight(0xdbeafe, 1.15);
+  fillLight.position.set(0.65, 0.25, -0.9);
+  const rimLight = new THREE.DirectionalLight(0xffd27d, 1.45);
+  rimLight.position.set(0, 0.8, 1.1);
+  portScene.add(amb, keyLight, fillLight, rimLight);
+
+  const portCam = new THREE.PerspectiveCamera(26, 1, 0.05, 10);
+  const prevRT = G.renderer.getRenderTarget();
+  const prevClearColor = G.renderer.getClearColor(new THREE.Color());
+  const prevClearAlpha = G.renderer.getClearAlpha();
+
+  const pixels = new Uint8Array(SIZE * SIZE * 4);
+  const flipCanvas = document.createElement('canvas');
+  flipCanvas.width = SIZE;
+  flipCanvas.height = SIZE;
+  const flipCtx = flipCanvas.getContext('2d');
+
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = SIZE;
+  outCanvas.height = SIZE;
+  const ctx = outCanvas.getContext('2d');
+
+  const headPos = new THREE.Vector3();
+  const portraitMap = {};
+
+  for (const id of ['101', '102', '103', '104', '105', '106', '107']) {
+    const npcDef = NPC_DEFS.find((n) => n.id === id);
+    const modelId = (npcDef && npcDef.model) || (id === '106' ? '107' : id);
+    const ch = makeChar(modelId);
+    if (!ch) continue;
+    const theme = PORTRAIT_THEMES[id] || PORTRAIT_THEMES['101'];
+
+    // 应用待机动画首帧，令角色自然垂臂立姿
+    if (G.anims) {
+      const ap = new AnimPlayer(ch.parts, G.anims);
+      ap.setSpeed(0);
+      ap.update(0.02);
+    }
+    portScene.add(ch.group);
+    ch.group.updateMatrixWorld(true);
+    if (ch.parts.mesh && ch.parts.mesh.skeleton) {
+      ch.parts.mesh.skeleton.update();
+    }
+
+    if (ch.parts.head) {
+      ch.parts.head.getWorldPosition(headPos);
+    } else {
+      headPos.set(0, (ch.height || 1.75) * 0.88, 0);
+    }
+
+    // 角色视觉正面朝向本地 -Z（参见 ANIMATION.md §4.4）
+    const lookY = headPos.y + (theme.camY || 0.065);
+    const lookZ = headPos.z - 0.02;
+    portCam.position.set(headPos.x + (theme.camX || 0), lookY + 0.015, headPos.z - (theme.dist || 0.47));
+    portCam.lookAt(headPos.x, lookY - 0.01, lookZ);
+    portCam.updateProjectionMatrix();
+
+    G.renderer.setRenderTarget(rt);
+    G.renderer.setClearColor(0x000000, 0);
+    G.renderer.clear(true, true, true);
+    G.renderer.render(portScene, portCam);
+    G.renderer.readRenderTargetPixels(rt, 0, 0, SIZE, SIZE, pixels);
+
+    portScene.remove(ch.group);
+
+    // WebGL 像素行序自底向上，翻转写入 2D Canvas
+    const imgData = flipCtx.createImageData(SIZE, SIZE);
+    for (let y = 0; y < SIZE; y++) {
+      const srcOff = (SIZE - 1 - y) * SIZE * 4;
+      const dstOff = y * SIZE * 4;
+      imgData.data.set(pixels.subarray(srcOff, srcOff + SIZE * 4), dstOff);
+    }
+    flipCtx.putImageData(imgData, 0, 0);
+
+    // 绘制古风仙侠径向渐变背景 + 光晕 + 3D 角色半身像
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    const grad = ctx.createRadialGradient(SIZE * 0.5, SIZE * 0.42, SIZE * 0.06, SIZE * 0.5, SIZE * 0.5, SIZE * 0.54);
+    grad.addColorStop(0, theme.bgInner);
+    grad.addColorStop(1, theme.bgOuter);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+
+    // 背光星轨装饰环
+    ctx.save();
+    ctx.strokeStyle = theme.rim;
+    ctx.globalAlpha = 0.22;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(SIZE * 0.5, SIZE * 0.46, SIZE * 0.36, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+
+    // 叠加 3D 角色渲染图层
+    ctx.drawImage(flipCanvas, 0, 0);
+
+    portraitMap[id] = outCanvas.toDataURL('image/png');
+  }
+
+  G.renderer.setRenderTarget(prevRT);
+  G.renderer.setClearColor(prevClearColor, prevClearAlpha);
+  rt.dispose();
+
+  // 更新所有角色定义与引擎队伍中的头像地址
+  HERO_DEFS.forEach((h) => {
+    if (portraitMap[h.id]) h.face = portraitMap[h.id];
+  });
+  NPC_DEFS.forEach((n) => {
+    if (portraitMap[n.id]) n.face = portraitMap[n.id];
+  });
+  if (G.engine && Array.isArray(G.engine.party)) {
+    G.engine.party.forEach((m) => {
+      const key = String(m.role_id || m.id || '');
+      if (portraitMap[key]) m.face = portraitMap[key];
+    });
+  }
+  G.cfg.faces = NPC_DEFS.map((n) => n.face);
+  G.portraits = portraitMap;
 }
 
 // ================= 场景 =================
@@ -1398,7 +1545,7 @@ function openEngineDialog(dlg) {
   $('dialog').style.display = 'block';
   const npcDef =
     NPC_DEFS.find((n) => dlg.speaker.includes(n.name)) || NPC_DEFS[0];
-  $('dlgPortrait').src = npcDef.face;
+  $('dlgPortrait').src = (G.portraits && G.portraits[npcDef.id]) || npcDef.face;
   $('dlgName').textContent = dlg.speaker;
   $('dlgText').textContent = dlg.text;
   const opts = $('dlgOpts');
@@ -1421,7 +1568,8 @@ function closeDialog() {
 // ================= HUD 与系统面板 =================
 function refreshStats() {
   const hero = G.engine.party[G.engine.leaderIdx] || G.engine.party[0];
-  $('portrait').src = hero.face;
+  const heroKey = String(hero.role_id || hero.id || '');
+  $('portrait').src = (G.portraits && G.portraits[heroKey]) || hero.face;
   $('pname').textContent = `${hero.name} · ${hero.title}`;
   $('hpBar').style.width = (hero.hp / hero.max_hp) * 100 + '%';
   $('hpTxt').textContent = `${Math.ceil(hero.hp)} / ${hero.max_hp}`;
@@ -1436,10 +1584,12 @@ function renderPartyBar() {
   if (!bar) return;
   bar.innerHTML = '';
   G.engine.party.forEach((m, idx) => {
+    const mKey = String(m.role_id || m.id || '');
+    const faceUrl = (G.portraits && G.portraits[mKey]) || m.face;
     const d = document.createElement('div');
     d.className = `pcard ${idx === G.engine.leaderIdx ? 'active' : ''} ${!m.in_team ? 'locked' : ''}`;
     d.innerHTML = `
-      <img src="${m.face}">
+      <img src="${faceUrl}">
       <div class="pinfo">
         <div class="ptop">
           <span><b>[${idx + 1}] ${m.name}</b> · ${m.astral_totem}</span>
