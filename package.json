@@ -1,0 +1,19 @@
+{
+  "name": "open-gujian2",
+  "version": "1.0.0",
+  "description": "Open-Gujian2 & agent-gujian2 — Deterministic ESM Core + Three.js 3D Runtime & Headless Agent Benchmark for GuJian 2 (古剑奇谭二：永夜初晗凝碧天)",
+  "type": "module",
+  "bin": {
+    "agent-gujian2": "bin/agent-gujian2-host.mjs"
+  },
+  "scripts": {
+    "test": "node test/run-headless-bench.mjs --mode normal && node test/run-headless-bench.mjs --mode pure",
+    "test:headless": "node test/run-headless-bench.mjs --mode normal && node test/run-headless-bench.mjs --mode pure",
+    "test:normal": "node test/run-headless-bench.mjs --mode normal",
+    "test:pure": "node test/run-headless-bench.mjs --mode pure",
+    "serve": "python3 server.py 8461"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>古剑奇谭二：永夜初晗凝碧天 · 山河行 —— 开放世界与无头智能体</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#0a0e14;
+    font-family:"Microsoft YaHei","PingFang SC",sans-serif; user-select:none; }
+  #app { position:fixed; inset:0; }
+  canvas { display:block; }
+
+  /* ---------- 加载 / 标题 ---------- */
+  #loading { position:fixed; inset:0; background:radial-gradient(120% 100% at 50% 0%, #1a2536 0%, #0a0e14 70%);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:100; color:#cfd8e3; }
+  #loading h1 { font-size:42px; letter-spacing:12px; color:#e8d9b0; text-shadow:0 0 24px rgba(232,217,176,.35); font-weight:600; }
+  #loading h2 { font-size:15px; letter-spacing:5px; color:#8fa0b5; margin:14px 0 40px; font-weight:400;}
+  #bar { width:420px; height:6px; background:#1d2735; border-radius:3px; overflow:hidden; }
+  #barIn { width:0%; height:100%; background:linear-gradient(90deg,#b98a3c,#e8d9b0); transition:width .2s; }
+  #loadTxt { margin-top:14px; font-size:12px; color:#6d7f94; letter-spacing:2px; }
+
+  #title { position:fixed; inset:0; z-index:90; display:none; flex-direction:column;
+    align-items:center; justify-content:center; background:linear-gradient(180deg,rgba(8,12,20,.55),rgba(8,12,20,.88)); }
+  #title h1 { font-size:50px; letter-spacing:14px; color:#f0e2bb; text-shadow:0 2px 30px rgba(0,0,0,.8), 0 0 60px rgba(232,217,176,.25); }
+  #title .sub { margin:16px 0 42px; color:#a8b8ca; letter-spacing:4px; font-size:14px; }
+  .btn { display:block; width:270px; text-align:center; padding:13px 0; margin:9px 0; cursor:pointer;
+    border:1px solid rgba(232,217,176,.45); color:#e8dcbf; font-size:16px; letter-spacing:6px;
+    background:rgba(20,28,40,.65); transition:all .2s; border-radius:4px; pointer-events:auto; }
+  .btn:hover { background:rgba(232,217,176,.18); border-color:#e8d9b0; text-shadow:0 0 12px rgba(232,217,176,.6); }
+  .btn.dis { opacity:.35; pointer-events:none; }
+  #title .foot { position:absolute; bottom:24px; color:#6d7f94; font-size:12px; letter-spacing:1px; text-align:center; line-height:1.9;}
+
+  /* ---------- HUD ---------- */
+  #hud { position:fixed; inset:0; pointer-events:none; z-index:20; display:none; }
+  #stat { position:absolute; left:18px; top:16px; display:flex; align-items:center; gap:12px; }
+  #portrait { width:64px; height:64px; border-radius:50%; border:2px solid #c9a961;
+    box-shadow:0 0 12px rgba(0,0,0,.6); object-fit:cover; background:#222; }
+  .barwrap { width:220px; }
+  .blabel { font-size:11px; color:#e8e2cf; text-shadow:0 1px 3px #000; margin-bottom:2px; display:flex; justify-content:space-between;}
+  .barbg { height:9px; background:rgba(0,0,0,.55); border-radius:4px; overflow:hidden; border:1px solid rgba(255,255,255,.18); }
+  .barbg>div { height:100%; border-radius:3px; transition:width .25s; }
+  #hpBar { background:linear-gradient(90deg,#8f2f2a,#d8563f); width:100%; }
+  #xpBar { background:linear-gradient(90deg,#7c6a2f,#d3b64f); width:0%; }
+  #lvl { font-size:20px; color:#f0dfae; text-shadow:0 1px 4px #000; font-weight:600; }
+
+  /* 四大主角小队栏 */
+  #partyBar { position:absolute; left:18px; top:94px; display:flex; flex-direction:column; gap:6px; pointer-events:auto; }
+  .pcard { display:flex; align-items:center; gap:8px; width:215px; padding:5px 8px;
+    background:rgba(8,12,18,.68); border:1px solid rgba(201,169,97,.32); border-radius:5px; cursor:pointer; transition:all .15s; }
+  .pcard.active { border-color:#f0dfae; background:rgba(40,34,20,.78); box-shadow:0 0 10px rgba(240,223,174,.3); }
+  .pcard.locked { opacity:0.42; }
+  .pcard img { width:32px; height:32px; border-radius:50%; border:1px solid #c9a961; object-fit:cover; }
+  .pcard .pinfo { flex:1; font-size:11px; color:#dde6f0; }
+  .pcard .pinfo .ptop { display:flex; justify-content:space-between; margin-bottom:3px; }
+  .pcard .php { height:5px; background:rgba(0,0,0,.6); border-radius:3px; overflow:hidden; }
+  .pcard .php>div { height:100%; background:linear-gradient(90deg,#3a8f52,#6fd886); }
+
+  /* 顶部工具按钮（AI 自动巡航 & 星蕴/偃甲） */
+  #topActions { position:absolute; left:320px; top:16px; display:flex; gap:10px; pointer-events:auto; }
+  .hudBtn { padding:7px 14px; background:rgba(12,18,28,.8); border:1px solid rgba(201,169,97,.55);
+    color:#f0e2bb; font-size:12px; letter-spacing:1.5px; border-radius:4px; cursor:pointer; transition:all .2s; }
+  .hudBtn:hover { background:rgba(201,169,97,.22); }
+  .hudBtn.on { background:rgba(46,110,65,.85); border-color:#8ff0a4; color:#fff; box-shadow:0 0 14px rgba(100,240,130,.45); }
+
+  /* Boss 血条与护盾预警 */
+  #bossHud { position:absolute; top:18px; left:50%; transform:translateX(-50%); width:440px;
+    background:rgba(12,10,16,.82); border:1px solid rgba(220,90,70,.6); border-radius:6px; padding:8px 14px; display:none; }
+  #bossTitle { font-size:14px; color:#ffb8a8; letter-spacing:2px; font-weight:600; display:flex; justify-content:space-between; margin-bottom:4px; }
+  #bossHpWrap { height:10px; background:rgba(0,0,0,.7); border-radius:4px; overflow:hidden; margin-bottom:4px; }
+  #bossHpBar { height:100%; width:100%; background:linear-gradient(90deg,#8f1d1d,#ff5238); transition:width .2s; }
+  #bossShieldWrap { height:6px; background:rgba(0,0,0,.7); border-radius:3px; overflow:hidden; }
+  #bossShieldBar { height:100%; width:100%; background:linear-gradient(90deg,#2b6cb0,#63b3ed); transition:width .2s; }
+  #bossTelegraph { margin-top:5px; font-size:12px; color:#ffdf5d; text-align:center; font-weight:600; letter-spacing:1px; }
+
+  #hotbar { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); display:flex; gap:8px; pointer-events:auto; }
+  .slot { width:56px; height:56px; background:rgba(10,14,20,.75); border:1px solid rgba(201,169,97,.5);
+    border-radius:6px; position:relative; cursor:pointer; }
+  .slot img { width:100%; height:100%; object-fit:cover; border-radius:5px; }
+  .slot .key { position:absolute; right:3px; bottom:1px; font-size:10px; color:#d9c68a; text-shadow:0 1px 2px #000; }
+  .slot .sname { position:absolute; left:3px; top:2px; font-size:9px; color:#fff; text-shadow:0 1px 2px #000; }
+  .slot .cd { position:absolute; inset:0; background:rgba(0,0,0,.65); border-radius:5px; transform-origin:bottom; }
+
+  #tracker { position:absolute; right:18px; top:56px; width:280px; background:rgba(8,12,18,.72);
+    border:1px solid rgba(201,169,97,.38); border-radius:6px; padding:12px 14px; }
+  #tracker h3 { font-size:13px; color:#d9c68a; letter-spacing:2px; margin-bottom:8px; font-weight:600;}
+  .q { font-size:12px; color:#c3ceda; margin:7px 0; line-height:1.55; }
+  .q .done { color:#8fc978; }
+  #regionName { position:absolute; top:86px; left:50%; transform:translateX(-50%); font-size:34px;
+    letter-spacing:14px; color:#f0e6c8; text-shadow:0 2px 24px rgba(0,0,0,.9),0 0 50px rgba(240,230,200,.25);
+    opacity:0; transition:opacity 1.2s; pointer-events:none; }
+  #clock { position:absolute; right:18px; top:16px; color:#d8e2ee; font-size:13px; text-align:right;
+    text-shadow:0 1px 3px #000; letter-spacing:1px; }
+  #minimap { position:absolute; left:18px; bottom:16px; width:196px; height:196px; border-radius:50%;
+    border:2px solid rgba(201,169,97,.6); box-shadow:0 0 18px rgba(0,0,0,.7); overflow:hidden; }
+  #minimap canvas { width:100%; height:100%; }
+  #hint { position:absolute; left:50%; bottom:86px; transform:translateX(-50%); color:#f2e9cf;
+    font-size:14px; letter-spacing:2px; text-shadow:0 1px 4px #000; opacity:0; transition:opacity .25s;
+    background:rgba(8,12,18,.65); padding:4px 14px; border-radius:4px; }
+  #dmgLayer { position:absolute; inset:0; overflow:hidden; }
+  .dmg { position:absolute; color:#ffd76e; font-size:18px; font-weight:700; text-shadow:0 1px 4px #000;
+    animation:dmgf 1s forwards; }
+  @keyframes dmgf { 0%{transform:translateY(0);opacity:1} 100%{transform:translateY(-46px);opacity:0} }
+  #toast { position:absolute; top:135px; left:50%; transform:translateX(-50%); background:rgba(8,12,18,.82);
+    border:1px solid rgba(201,169,97,.5); color:#ead9a8; padding:8px 22px; border-radius:4px; font-size:13px;
+    letter-spacing:2px; opacity:0; transition:opacity .4s; z-index:25; }
+  #vignette { position:absolute; inset:0; box-shadow:inset 0 0 180px rgba(0,0,0,.55); }
+  #hurt { position:absolute; inset:0; background:radial-gradient(ellipse at center, transparent 55%, rgba(160,20,10,.55));
+    opacity:0; transition:opacity .3s; }
+
+  /* ---------- 对话 ---------- */
+  #dialog { position:absolute; left:50%; bottom:100px; transform:translateX(-50%); width:660px;
+    background:rgba(10,14,20,.92); border:1px solid rgba(201,169,97,.6); border-radius:8px; padding:18px 22px;
+    display:none; pointer-events:auto; z-index:30; }
+  #dlgPortrait { width:76px; height:76px; border-radius:6px; border:2px solid #c9a961; object-fit:cover; float:left; margin-right:16px; }
+  #dlgName { color:#e8cf8e; font-size:16px; letter-spacing:3px; margin-bottom:8px; font-weight:600;}
+  #dlgText { color:#d4dde8; font-size:14px; line-height:1.8; min-height:60px; }
+  #dlgOpts { clear:both; padding-top:12px; text-align:right; }
+  #dlgOpts .btn { display:inline-block; width:auto; padding:7px 20px; margin-left:10px; font-size:13px; letter-spacing:3px;}
+
+  /* ---------- 面板 ---------- */
+  .panel { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:600px; max-height:78vh;
+    background:rgba(10,14,20,.94); border:1px solid rgba(201,169,97,.55); border-radius:8px; padding:20px 24px;
+    display:none; pointer-events:auto; overflow:auto; z-index:35; }
+  .panel h2 { color:#e8cf8e; font-size:17px; letter-spacing:5px; margin-bottom:14px; font-weight:600;
+    border-bottom:1px solid rgba(201,169,97,.3); padding-bottom:10px; }
+  #invGrid { display:grid; grid-template-columns:repeat(8,1fr); gap:8px; }
+  .icell { aspect-ratio:1; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:4px;
+    position:relative; }
+  .icell img { width:100%; height:100%; object-fit:cover; border-radius:3px; }
+  .icell .cnt { position:absolute; right:2px; bottom:1px; font-size:10px; color:#fff; text-shadow:0 1px 2px #000; }
+  .icell.empty { opacity:.25; }
+  .prow { display:flex; justify-content:space-between; align-items:center; color:#c3ceda; font-size:13px; margin:8px 0; }
+  .miniBtn { padding:4px 12px; border:1px solid #c9a961; background:rgba(201,169,97,.18); color:#f0e2bb;
+    border-radius:3px; cursor:pointer; font-size:12px; }
+  .miniBtn:hover { background:rgba(201,169,97,.38); }
+  #closePanel { position:absolute; right:14px; top:12px; color:#8fa0b5; cursor:pointer; font-size:18px; }
+  #bigmap { width:100%; border-radius:4px; display:block; }
+  #helpList { color:#c3ceda; font-size:13px; line-height:2.0; }
+  #helpList b { color:#e8cf8e; display:inline-block; width:140px; font-weight:600;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="loading">
+  <h1>永 夜 初 晗 凝 碧 天</h1>
+  <h2>古剑奇谭 II · 九域七章全流程开放世界 & 智能体运行时</h2>
+  <div id="bar"><div id="barIn"></div></div>
+  <div id="loadTxt">正在唤醒山河…</div>
+</div>
+
+<div id="title">
+  <h1>古剑奇谭二 · 山河行</h1>
+  <div class="sub">《永夜初晗凝碧天》真实九域地形 · 四主角即时小队 · 偃甲星蕴 · 双端确定性内核</div>
+  <div class="btn" id="btnNew">初 入 长 安</div>
+  <div class="btn" id="btnAutoStart">🤖 AI 全自动通关演示</div>
+  <div class="btn dis" id="btnCont">继 续 行 程</div>
+  <div class="foot">
+    四大主角：101 乐无异 · 102 闻人羽 · 103 夏夷则 · 104 阿阮 ｜ 剧情强敌：105 华月 · 106 谢衣/初七 · 107 沈夜<br>
+    WASD 移动 · 1-4 切换主角 · J 轻击三连 · K 重击破盾 · L 星蕴战技 · C 闪避无敌帧 · U 星蕴终结技 · P AI巡航
+  </div>
+</div>
+
+<div id="hud">
+  <div id="vignette"></div><div id="hurt"></div>
+  <div id="stat">
+    <img id="portrait" alt="">
+    <div class="barwrap">
+      <div class="blabel"><span id="pname">乐无异 · 长安偃师</span><span id="hpTxt"></span></div>
+      <div class="barbg"><div id="hpBar"></div></div>
+      <div class="blabel" style="margin-top:5px"><span id="totemTxt">星蕴·腾蛇</span><span id="xpTxt"></span></div>
+      <div class="barbg" style="height:6px"><div id="xpBar"></div></div>
+    </div>
+    <div id="lvl">10</div>
+  </div>
+
+  <div id="partyBar"></div>
+
+  <div id="topActions">
+    <div class="hudBtn" id="btnAutoPilot">🤖 AI 自动巡航 (P)</div>
+    <div class="hudBtn" id="btnSystemPanel">✨ 星蕴 / 偃甲 / 桃源 (Y)</div>
+    <div class="hudBtn" id="btnMapTop">🗺 舆图 (M)</div>
+    <div class="hudBtn" id="btnHelpTop">📖 指引 (H)</div>
+  </div>
+
+  <div id="bossHud">
+    <div id="bossTitle"><span id="bossName">沙海巨型偃甲·金刚力士</span><span id="bossHpNum"></span></div>
+    <div id="bossHpWrap"><div id="bossHpBar"></div></div>
+    <div id="bossShieldWrap"><div id="bossShieldBar"></div></div>
+    <div id="bossTelegraph"></div>
+  </div>
+
+  <div id="clock"></div>
+  <div id="tracker"><h3>永 夜 初 晗 · 主 线</h3><div id="questList"></div></div>
+  <div id="regionName"></div>
+  <div id="toast"></div>
+  <div id="hint"></div>
+  <div id="hotbar"></div>
+  <div id="minimap"><canvas id="mmc" width="392" height="392"></canvas></div>
+  <div id="dmgLayer"></div>
+
+  <div id="dialog">
+    <img id="dlgPortrait" alt="">
+    <div id="dlgName"></div>
+    <div id="dlgText"></div>
+    <div id="dlgOpts"></div>
+  </div>
+
+  <div class="panel" id="invPanel">
+    <span id="closePanel">✕</span><h2>行 囊 与 偃 甲</h2><div id="invGrid"></div><div id="invStats"></div>
+  </div>
+  <div class="panel" id="sysPanel">
+    <span id="closePanelSys" style="position:absolute;right:14px;top:12px;color:#8fa0b5;cursor:pointer;font-size:18px">✕</span>
+    <h2>星 蕴 定 式 · 偃 甲 工 坊 · 桃 源 仙 居</h2>
+    <div id="sysContent"></div>
+  </div>
+  <div class="panel" id="mapPanel">
+    <span id="closePanel2" style="position:absolute;right:14px;top:12px;color:#8fa0b5;cursor:pointer;font-size:18px">✕</span>
+    <h2>九 域 舆 图</h2><img id="bigmap"><div class="prow" id="mapInfo"></div>
+  </div>
+  <div class="panel" id="helpPanel">
+    <span id="closePanel3" style="position:absolute;right:14px;top:12px;color:#8fa0b5;cursor:pointer;font-size:18px">✕</span>
+    <h2>《古剑奇谭二：永夜初晗凝碧天》操 作 指 引</h2>
+    <div id="helpList">
+      <b>W A S D</b>移动（建筑 OBB 阻挡 / 桥梁抬升 / 陡坡防攀爬）<br>
+      <b>1 / 2 / 3 / 4</b>实时切换领队（乐无异 / 闻人羽 / 夏夷则 / 阿阮）<br>
+      <b>左键 / J</b>轻攻击三连击（Combo 1-2-3）<br>
+      <b>K / G</b>重击破盾（K） / 天罡格挡反击（G）<br>
+      <b>C / 右键</b>闪避翻滚（赋予 0.45s 无敌帧规避 Boss 红圈 AOE）<br>
+      <b>L / U</b>星蕴元素战技（L） / 四主角星蕴终结技（U）<br>
+      <b>F</b>NPC 交互 / 采集零件 / 破解古墓与捐毒遗迹机关<br>
+      <b>Y / I / M</b>星蕴偃甲桃源面板（Y） / 行囊（I） / 舆图（M）<br>
+      <b>P</b>切换 🤖 AI 自动巡航（按任意方向键立即由真人接管）
+    </div>
+  </div>
+</div>
+
+<script>
+  window.addEventListener('error', (e) => {
+    window.__err = (e.message || 'script error') + ' @ ' + (e.filename || '') + ':' + (e.lineno || '');
+    const el = document.getElementById('loadTxt');
+    if (el) { el.textContent = '脚本错误: ' + window.__err; el.style.color = '#ff8a7a'; }
+  });
+</script>
+<script type="importmap">{ "imports": { "three": "./js/three.module.js", "three/addons/": "./js/addons/" } }</script>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
