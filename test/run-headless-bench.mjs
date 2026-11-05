@@ -146,11 +146,23 @@ async function runBenchmark() {
     assert.equal(moveTrial.event, 'move_reached');
     const passTrial = await client.send({ cmd: 'interact', target: 'npc_wooden_trial' });
     assert.equal(passTrial.dialog.visible, true);
+    assert.equal(passTrial.dialog.scene_id, 'scene_ch1_trial');
+    assert.ok(passTrial.cutscene.active);
+    // 逐句推进原版剧本台词与 3D 摄像机运镜切镜，并执行多分支剧情抉择
+    const stepLine2 = await client.send({ cmd: 'step_dialog' });
+    assert.equal(stepLine2.dialog.line_index, 1);
+    const branchRes = await client.send({
+      cmd: 'choose_branch',
+      branch_id: 'branch_ch1_departure',
+      option: 'opt_ch1_benevolence',
+    });
+    assert.equal(branchRes.chosen_option, 'opt_ch1_benevolence');
+    assert.ok(branchRes.story.affection[106] >= 75);
     const afterTrial = await client.send({ cmd: 'interact' });
     assert.equal(afterTrial.dialog.visible, false);
     checkStage(afterTrial, 200);
     console.log(
-      `[PASS] 4. 第一章·长安偃术试炼完成 (stage 100->200): 收集齿轮机芯并打造【竹笋包子号】，通过定国公府木甲试炼`,
+      `[PASS] 4. 第一章·长安偃术试炼完成 (stage 100->200): 打造【竹笋包子号】、体验原版逐句台词运镜 (${afterTrial.cutscene.shot_name}) 与分支抉择`,
     );
 
     // Step 5: 第二章·江陵古墓与百草天罡 (n01p1 望仙台, stage 200 -> 300)
@@ -371,13 +383,22 @@ async function runBenchmark() {
       `[PASS] 13. 终章（中）·四主角无缝切换与星蕴终结技【金刚力士 / 流光 / 太极 / 山鬼】决战告捷: 全队 Lv.${battleShenye.party[0].level}, 终结技释放=${battleShenye.combat.ultimates_triggered} 次`,
     );
 
-    // Step 14: 终章（下）·触发《永夜初晗凝碧天》大结局通关 (game_cleared = true, stage = 1000)
+    // Step 14: 终章（下）·触发《永夜初晗凝碧天》大结局通关、原版全剧本演绎与【星海忆念】支线验证 (game_cleared = true, stage = 1000)
+    await client.send({ cmd: 'move_to', x: 1525.0, z: -1225.0, max_steps: 60 });
+    const echoShenxi = await client.send({ cmd: 'trigger_echo', echo_id: 'echo_q08_shenxi' });
+    assert.ok(echoShenxi.story.echoes_discovered.includes('echo_q08_shenxi'));
+    await client.send({ cmd: 'interact' });
+
+    await client.send({ cmd: 'move_to', x: 1550.0, z: -1250.0, max_steps: 60 });
     const grandEnding = await client.send({ cmd: 'interact', target: 'altar_grand_ending' });
     assert.equal(grandEnding.game_cleared, true);
     assert.equal(grandEnding.discovered_regions.length, 9);
+    assert.ok(grandEnding.story.scenes_viewed_count >= 12);
+    assert.ok(grandEnding.story.lines_read >= 30);
+    assert.ok(grandEnding.cutscene.camera_cuts >= 25);
     checkStage(grandEnding, 1000);
     console.log(
-      `[PASS] 14. 终章（下）·《永夜初晗凝碧天》大结局通关: game_cleared=${grandEnding.game_cleared}, 九域全探索=${grandEnding.discovered_regions.length}/9`,
+      `[PASS] 14. 终章（下）·《永夜初晗凝碧天》大结局通关: game_cleared=${grandEnding.game_cleared}, 九域=${grandEnding.discovered_regions.length}/9, 原版剧目=${grandEnding.story.scenes_viewed_count}/12, 台词=${grandEnding.story.lines_read}句, 运镜切镜=${grandEnding.cutscene.camera_cuts}次`,
     );
 
     // Step 15: 内存快照毫秒级回滚验证 (load_checkpoint)

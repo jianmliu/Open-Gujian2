@@ -1,6 +1,15 @@
 // engine_core.js —— 《古剑奇谭二：永夜初晗凝碧天》纯 ESM 确定性游戏核心引擎
 // 零 DOM / 零 WebGL 依赖：既可在 Node.js 无头宿主以 20,000+ FPS 锁步运行，也可在浏览器端直接驱动 Three.js 场景与 HUD。
 
+import {
+  STORY_SCRIPTS,
+  STORY_BRANCHES,
+  SIDE_ECHOES,
+  CAMERA_SHOT_PRESETS,
+} from './story_data.js';
+
+export { STORY_SCRIPTS, STORY_BRANCHES, SIDE_ECHOES, CAMERA_SHOT_PRESETS };
+
 /**
  * Mulberry32 确定性伪随机数发生器
  * @param {number} seed
@@ -832,12 +841,54 @@ export class Gujian2EngineCore {
       ],
     };
 
-    // 对话与过场状态
+    // 对话与过场状态（支持原版逐字剧本台词、多分支抉择与 3D 电影运镜）
     this.dialog = {
       visible: false,
+      scene_id: '',
+      scene_title: '',
+      subtitle: '',
+      poem: '',
+      story_cg: '',
       speaker: '',
+      role_id: 101,
+      speaker_title: '',
+      emotion: '',
       text: '',
+      line_index: 0,
+      total_lines: 0,
+      lines: [],
+      branch_id: '',
       target_id: '',
+    };
+
+    this.story = {
+      active_scene_id: '',
+      scenes_viewed: [],
+      lines_read: 0,
+      branches_chosen: {},
+      pending_branch: null,
+      alignment: { benevolence: 10, resolve: 10, insight: 10 },
+      affection: { 102: 50, 103: 50, 104: 50, 106: 60 },
+      echoes_discovered: [],
+    };
+
+    this.cutscene = {
+      active: false,
+      scene_id: '',
+      shot: 'ots',
+      shot_name: '越肩对峙 (Over-The-Shoulder)',
+      focus: 'player',
+      anim: 'idle',
+      fov: 38,
+      dist: 3.2,
+      height: 1.62,
+      sideOffset: -0.65,
+      lookHeight: 1.42,
+      orbitSpeed: 0.04,
+      shake: 0,
+      story_cg: '',
+      poem: '',
+      camera_cuts: 0,
     };
 
     this.sequence = {
@@ -999,7 +1050,285 @@ export class Gujian2EngineCore {
         pos: [1550.0, this.physics.heightAt(1550.0, -1250.0), -1250.0],
         interacted: false,
       },
+      // 九域 9 处【星海忆念·原版支线】记忆碑
+      ...SIDE_ECHOES.map((e) => ({
+        id: e.id,
+        name: e.name,
+        kind: 'echo',
+        region: e.region,
+        pos: [e.pos[0], this.physics.heightAt(e.pos[0], e.pos[1]), e.pos[1]],
+        interacted: false,
+      })),
     ];
+  }
+
+  /**
+   * 启动一段原版剧本过场台词与专属 3D 摄像机运镜
+   */
+  _startScriptScene(sceneId, targetId = '') {
+    const sc = STORY_SCRIPTS[sceneId];
+    if (!sc || !sc.lines || !sc.lines.length) return;
+
+    if (!this.story.scenes_viewed.includes(sceneId)) {
+      this.story.scenes_viewed.push(sceneId);
+    }
+    this.story.active_scene_id = sceneId;
+
+    const first = sc.lines[0];
+    this.dialog = {
+      visible: true,
+      scene_id: sc.id,
+      scene_title: sc.title,
+      subtitle: sc.subtitle || '',
+      poem: sc.poem || '',
+      story_cg: sc.story_cg || 'assets/ui/story/story_00.png',
+      speaker: first.speaker,
+      role_id: first.role_id || 101,
+      speaker_title: first.title || '',
+      emotion: first.emotion || '',
+      text: first.text,
+      line_index: 0,
+      total_lines: sc.lines.length,
+      lines: sc.lines.map((l) => ({ ...l })),
+      branch_id: sc.branch_id || '',
+      target_id: targetId,
+    };
+
+    if (sc.branch_id && !this.story.branches_chosen[sc.branch_id]) {
+      this.story.pending_branch = STORY_BRANCHES[sc.branch_id] || null;
+    } else {
+      this.story.pending_branch = null;
+    }
+
+    this._applyLineCamera(first, sc);
+    this.story.lines_read++;
+  }
+
+  _applyLineCamera(line, sc = null) {
+    const cam = (line && line.camera) || { shot: 'ots', focus: 'player', anim: 'idle' };
+    const preset = CAMERA_SHOT_PRESETS[cam.shot] || CAMERA_SHOT_PRESETS.ots;
+    this.cutscene = {
+      active: true,
+      scene_id: (sc && sc.id) || this.dialog.scene_id || '',
+      shot: cam.shot || 'ots',
+      shot_name: preset.name,
+      focus: cam.focus || 'player',
+      anim: cam.anim || 'idle',
+      fov: preset.fov,
+      dist: preset.dist,
+      height: preset.height,
+      sideOffset: preset.sideOffset,
+      lookHeight: preset.lookHeight,
+      orbitSpeed: preset.orbitSpeed,
+      shake: cam.shake || 0,
+      story_cg: (sc && sc.story_cg) || this.dialog.story_cg || '',
+      poem: (sc && sc.poem) || this.dialog.poem || '',
+      camera_cuts: (this.cutscene.camera_cuts || 0) + 1,
+    };
+  }
+
+  /**
+   * 逐句推进原版剧本台词与 3D 摄像机切镜（F 键 / 点击对话框 / JSON-Lines step_dialog）
+   */
+  stepDialog() {
+    if (!this.dialog.visible) {
+      return this.observe({ event: 'dialog_not_active' });
+    }
+
+    const nextIdx = (this.dialog.line_index || 0) + 1;
+    if (this.dialog.lines && nextIdx < this.dialog.lines.length) {
+      const ln = this.dialog.lines[nextIdx];
+      this.dialog.line_index = nextIdx;
+      this.dialog.speaker = ln.speaker;
+      this.dialog.role_id = ln.role_id || 101;
+      this.dialog.speaker_title = ln.title || '';
+      this.dialog.emotion = ln.emotion || '';
+      this.dialog.text = ln.text;
+      this._applyLineCamera(ln);
+      this.story.lines_read++;
+      return this.observe({
+        event: `dialog_line:${this.dialog.scene_id}:${nextIdx + 1}/${this.dialog.total_lines}`,
+      });
+    }
+
+    // 若当前剧目带有尚未抉择的多分支选项，进入分支抉择状态
+    if (this.dialog.branch_id && !this.story.branches_chosen[this.dialog.branch_id]) {
+      const br = STORY_BRANCHES[this.dialog.branch_id];
+      if (br) {
+        this.story.pending_branch = br;
+        return this.observe({
+          event: `branch_prompt:${br.id}`,
+          branch: {
+            id: br.id,
+            prompt: br.prompt,
+            options: br.options.map((o, idx) => ({ index: idx, id: o.id, label: o.label })),
+          },
+        });
+      }
+    }
+
+    this.dialog.visible = false;
+    this.cutscene.active = false;
+    this.story.pending_branch = null;
+    if (this.sequence.active) {
+      this.sequence.active = false;
+      this.sequence.completed_count++;
+      if (this.quest_stage >= 950) {
+        this.quest_stage = 1000;
+        this.game_cleared = true;
+      }
+    }
+    return this.observe({ event: 'dialog_closed' });
+  }
+
+  /**
+   * 选择多分支剧情对话选项（影响同伴好感度、道心倾向、属性加成与专属剧情信物）
+   */
+  chooseBranch(branchId = null, optionIndexOrId = 0) {
+    const bid =
+      branchId ||
+      this.dialog.branch_id ||
+      (this.story.pending_branch && this.story.pending_branch.id) ||
+      Object.keys(STORY_BRANCHES).find((k) => !this.story.branches_chosen[k]);
+    const br = STORY_BRANCHES[bid];
+    if (!br) {
+      return { ok: false, error: `Unknown branch_id: ${bid}` };
+    }
+
+    let opt = null;
+    if (typeof optionIndexOrId === 'number') {
+      opt = br.options[optionIndexOrId] || br.options[0];
+    } else {
+      opt =
+        br.options.find((o) => o.id === String(optionIndexOrId)) ||
+        br.options[Number(optionIndexOrId) || 0] ||
+        br.options[0];
+    }
+
+    this.story.branches_chosen[br.id] = opt.id;
+    this.story.pending_branch = null;
+
+    if (opt.alignment && this.story.alignment[opt.alignment] !== undefined) {
+      this.story.alignment[opt.alignment] += 10;
+    }
+    if (opt.affection) {
+      for (const [rid, delta] of Object.entries(opt.affection)) {
+        this.story.affection[rid] = (this.story.affection[rid] || 50) + delta;
+      }
+    }
+    if (opt.bonus) {
+      for (const m of this.party) {
+        if (opt.bonus.max_hp) {
+          m.max_hp += opt.bonus.max_hp;
+          m.hp = m.max_hp;
+        }
+        if (opt.bonus.attack) {
+          m.attack += opt.bonus.attack;
+        }
+        m.morale = 100;
+      }
+      if (opt.bonus.star_souls) {
+        this.astral.star_souls += opt.bonus.star_souls;
+      }
+      if (opt.bonus.parts) {
+        this.puppets.parts_count += opt.bonus.parts;
+      }
+      if (opt.bonus.item) {
+        this._addItem(opt.bonus.item.id, opt.bonus.item.name, 1);
+      }
+    }
+
+    this.dialog.visible = true;
+    this.dialog.speaker = '剧情抉择回响';
+    this.dialog.role_id = 101;
+    this.dialog.speaker_title = `已选：${opt.id}`;
+    this.dialog.emotion = '抉择';
+    this.dialog.text = opt.reply;
+    this.dialog.line_index = this.dialog.total_lines;
+    this._applyLineCamera({ camera: { shot: 'closeup', focus: 'player', anim: 'attack' } });
+
+    return this.observe({
+      event: `branch_chosen:${br.id}:${opt.id}`,
+      chosen_option: opt.id,
+      reply: opt.reply,
+    });
+  }
+
+  /**
+   * 任意时刻回放/切入 12 场主线原版剧本或 9 处星海忆念过场运镜
+   */
+  playScript(sceneId = 'scene_ch1_parts') {
+    if (STORY_SCRIPTS[sceneId]) {
+      this._startScriptScene(sceneId, sceneId);
+      return this.observe({ event: `script_playing:${sceneId}` });
+    }
+    const echo = SIDE_ECHOES.find((e) => e.id === sceneId);
+    if (echo) {
+      return this.triggerEcho(echo.id, true);
+    }
+    return { ok: false, error: `Unknown scene_id: ${sceneId}` };
+  }
+
+  /**
+   * 触发九域【星海忆念·原版支线】记忆碑
+   */
+  triggerEcho(echoId, ignoreRange = false) {
+    const echo =
+      SIDE_ECHOES.find((e) => e.id === echoId) ||
+      SIDE_ECHOES.find((e) => e.region === this.currentRegion) ||
+      SIDE_ECHOES[0];
+    if (!echo) {
+      return { ok: false, error: `Unknown echo_id: ${echoId}` };
+    }
+
+    if (this.mode === 'pure' && !ignoreRange) {
+      const dist = Math.hypot(this.position[0] - echo.pos[0], this.position[2] - echo.pos[1]);
+      if (dist > 35.0) {
+        return {
+          ok: false,
+          error: `pure_mode_out_of_range: distance ${dist.toFixed(1)}m > 35m to ${echo.id}`,
+        };
+      }
+    }
+
+    if (!this.story.echoes_discovered.includes(echo.id)) {
+      this.story.echoes_discovered.push(echo.id);
+      if (echo.reward) {
+        this.inventory.money += echo.reward.money || 300;
+        if (echo.reward.item) {
+          this._addItem(echo.reward.item.id, echo.reward.item.name, 1);
+        }
+      }
+    }
+
+    const obj = this.worldObjects.find((o) => o.id === echo.id);
+    if (obj) obj.interacted = true;
+
+    const first = echo.lines[0];
+    this.dialog = {
+      visible: true,
+      scene_id: echo.id,
+      scene_title: echo.name,
+      subtitle: `星海忆念 · ${echo.region}`,
+      poem: '往事如烟凝碧天，剑心回响越千年。',
+      story_cg: echo.story_cg || 'assets/ui/story/story_00.png',
+      speaker: first.speaker,
+      role_id: first.role_id || 101,
+      speaker_title: first.title || '',
+      emotion: '追忆',
+      text: first.text,
+      line_index: 0,
+      total_lines: echo.lines.length,
+      lines: echo.lines.map((l) => ({ ...l })),
+      branch_id: '',
+      target_id: echo.id,
+    };
+    this._applyLineCamera(first, { id: echo.id, story_cg: echo.story_cg });
+    this.story.lines_read++;
+
+    return this.observe({
+      event: `echo_triggered:${echo.id}`,
+    });
   }
 
   _addItem(id, name, count = 1) {
@@ -1061,6 +1390,12 @@ export class Gujian2EngineCore {
     if (this.dialog.visible || this.sequence.active) {
       if (this._apTimer > 0.65) {
         this._apTimer = 0;
+        if (this.story.pending_branch && !this.story.branches_chosen[this.story.pending_branch.id]) {
+          return this.chooseBranch(this.story.pending_branch.id, 0);
+        }
+        if (this.dialog.visible && this.dialog.line_index + 1 < this.dialog.total_lines) {
+          return this.stepDialog();
+        }
         return this.interact();
       }
       return null;
@@ -1347,6 +1682,7 @@ export class Gujian2EngineCore {
     if (mech.id === 'mech_jiangling_tomb' && this.quest_stage >= 200 && this.quest_stage < 300) {
       this.quest_stage = 300;
       this._levelUpParty(18, 10, 45);
+      this._startScriptScene('scene_ch2_tomb', mech.id);
     } else if (
       mech.id === 'mech_juandu_armillary' &&
       this.quest_stage >= 600 &&
@@ -1354,6 +1690,7 @@ export class Gujian2EngineCore {
     ) {
       this.quest_stage = 650;
       this._levelUpParty(35, 14, 70);
+      this._startScriptScene('scene_ch5_juandu', mech.id);
     }
 
     return this.observe({
@@ -1413,14 +1750,26 @@ export class Gujian2EngineCore {
    * 场景交互（对话推进、采集零件、触发 Boss 战、终章结算）
    */
   interact(targetId = null) {
-    // 若当前对话开启，再次 interact 关闭对话并完成事件结算
-    if (this.dialog.visible) {
+    // 若当前对话开启且未指定新 targetId，则完结当前对话（并自动结算剩余台词与默认分支）
+    if (!targetId && this.dialog.visible) {
+      if (this.dialog.lines && this.dialog.line_index + 1 < this.dialog.lines.length) {
+        const remaining = this.dialog.lines.length - 1 - this.dialog.line_index;
+        this.story.lines_read += remaining;
+        this.cutscene.camera_cuts += remaining;
+      }
+      if (this.dialog.branch_id && !this.story.branches_chosen[this.dialog.branch_id]) {
+        this.chooseBranch(this.dialog.branch_id, 0);
+      }
       this.dialog.visible = false;
+      this.cutscene.active = false;
+      this.story.pending_branch = null;
       return this.observe({ event: 'dialog_closed' });
     }
-    if (this.sequence.active) {
+    if (!targetId && this.sequence.active) {
       this.sequence.active = false;
       this.sequence.completed_count++;
+      this.dialog.visible = false;
+      this.cutscene.active = false;
       if (this.quest_stage >= 950) {
         this.quest_stage = 1000;
         this.game_cleared = true;
@@ -1457,40 +1806,36 @@ export class Gujian2EngineCore {
 
     target.interacted = true;
 
-    // 1. 第一章：收集定国公府偃甲零件
+    // 0. 九域【星海忆念·原版支线】记忆碑
+    if (target.kind === 'echo' || target.id.startsWith('echo_')) {
+      return this.triggerEcho(target.id);
+    }
+
+    // 1. 第一章：收集定国公府偃甲零件（触发原版第一幕剧本）
     if (target.id === 'obj_yanshi_parts') {
       this.puppets.parts_count += 4;
       this._addItem(3001, '精铁齿轮', 3);
       this._addItem(3002, '灵木机芯', 2);
+      this._startScriptScene('scene_ch1_parts', target.id);
       if (this.quest_stage < 130) this.quest_stage = 130;
       return this.observe({ event: 'parts_collected' });
     }
 
-    // 2. 第一章：通过长安木甲试炼
+    // 2. 第一章：通过长安木甲试炼（触发原版第二幕剧本 + 多分支抉择）
     if (target.id === 'npc_wooden_trial') {
       if (!this.puppets.crafted.includes('zhusun_baozi')) {
         this.craftPuppet('zhusun_baozi');
       }
-      this.dialog = {
-        visible: true,
-        speaker: '长安偃术试炼官',
-        text: '好一座精妙绝伦的【竹笋包子号】！乐少爷的偃术造诣已得谢衣大师几分神韵，试炼通过！',
-        target_id: target.id,
-      };
+      this._startScriptScene('scene_ch1_trial', target.id);
       if (this.quest_stage < 200) this.quest_stage = 200;
       this._levelUpParty(14, 8, 30);
       return this.observe({ event: 'chapter1_trial_passed' });
     }
 
-    // 3. 第二章：望仙台江陵古墓·闻人羽入队
+    // 3. 第二章：望仙台江陵古墓·闻人羽入队（触发原版第三幕剧本 + 多分支抉择）
     if (target.id === 'npc_wenrenyu') {
       this.party[1].in_team = true;
-      this.dialog = {
-        visible: true,
-        speaker: '闻人羽',
-        text: '你就是长安乐家的偃师乐无异？这古墓深处有流月城妖人布下的双枢机关，我们合力破阵！',
-        target_id: target.id,
-      };
+      this._startScriptScene('scene_ch2_wenren', target.id);
       if (this.quest_stage < 250) this.quest_stage = 250;
       return this.observe({ event: 'ally_joined:闻人羽' });
     }
@@ -1499,49 +1844,34 @@ export class Gujian2EngineCore {
       return this.solveMechanism('mech_jiangling_tomb');
     }
 
-    // 4. 第三章：青萝谷·夏夷则入队
+    // 4. 第三章：青萝谷·夏夷则入队（触发原版第五幕剧本）
     if (target.id === 'npc_xiayize') {
       this.party[2].in_team = true;
-      this.dialog = {
-        visible: true,
-        speaker: '夏夷则',
-        text: '在下太华山夏夷则。诸位欲寻偃术大师谢衣前辈，恰与在下同路，不妨结伴同行。',
-        target_id: target.id,
-      };
+      this._startScriptScene('scene_ch3_xiayize', target.id);
       if (this.quest_stage < 370) this.quest_stage = 370;
       this._levelUpParty(22, 10, 40);
       return this.observe({ event: 'ally_joined:夏夷则' });
     }
 
-    // 5. 第三章：镜湖秘境·阿阮入队（四大主角全员集结！）
+    // 5. 第三章：镜湖秘境·阿阮入队（四大主角全员集结！触发原版第六幕剧本 + 多分支抉择）
     if (target.id === 'npc_aruan') {
       this.party[0].in_team = true;
       this.party[1].in_team = true;
       this.party[2].in_team = true;
       this.party[3].in_team = true;
-      this.dialog = {
-        visible: true,
-        speaker: '阿阮',
-        text: '唔……我睡了好久好久呀。你们手里的剑心碎片真暖和，阿阮也要跟你们一起去人间玩！',
-        target_id: target.id,
-      };
+      this._startScriptScene('scene_ch3_aruan', target.id);
       if (this.quest_stage < 450) this.quest_stage = 450;
       this._levelUpParty(28, 12, 50);
       return this.observe({ event: 'ally_joined:阿阮' });
     }
 
-    // 6. 第四章：禾风平原静水湖·拜见谢衣，解锁桃源仙居与星蕴盘
+    // 6. 第四章：禾风平原静水湖·拜见谢衣，解锁桃源仙居与星蕴盘（触发原版第七幕剧本 + 多分支抉择）
     if (target.id === 'npc_xieyi') {
       this.home.unlocked = true;
       this.astral.unlocked = true;
       this.astral.star_souls = Math.max(this.astral.star_souls, 16);
       this.puppets.parts_count += 6;
-      this.dialog = {
-        visible: true,
-        speaker: '谢衣',
-        text: '无异，你天资聪颖、心怀赤诚。这【桃源仙居图】与【四象星蕴盘】便传授于你，切记莫忘偃师本心。',
-        target_id: target.id,
-      };
+      this._startScriptScene('scene_ch4_xieyi', target.id);
       if (this.quest_stage < 520) this.quest_stage = 520;
       this._levelUpParty(32, 12, 60);
       return this.observe({ event: 'xieyi_met_unlock_home_astral' });
@@ -1551,8 +1881,10 @@ export class Gujian2EngineCore {
       return this.solveMechanism('mech_juandu_armillary');
     }
 
-    // 7. 第五章：赤岩荒原捐毒遗迹 Boss【沙海巨型偃甲·金刚力士】
+    // 7. 第五章：赤岩荒原捐毒遗迹 Boss【沙海巨型偃甲·金刚力士】（触发原版第九幕剧本）
     if (target.id === 'boss_jingang') {
+      this._startScriptScene('scene_ch5_jingang', target.id);
+      this.dialog.visible = false; // 进入即时 Boss 战
       this._startCombat({
         boss_id: 'boss_jingang',
         vip_monster: 6101,
@@ -1564,14 +1896,15 @@ export class Gujian2EngineCore {
       return this.observe({ event: 'combat_started:boss_jingang' });
     }
 
-    // 8. 第六章：雾隐林巫山神女墓·唤醒昭明剑心
+    // 8. 第六章：雾隐林巫山神女墓·唤醒昭明剑心（触发原版第十幕初七绝响剧本 + 多分支抉择）
     if (target.id === 'altar_zhaoming_heart') {
       this._addItem(3601, '昭明剑心碎片', 1);
+      this._startScriptScene('scene_ch6_zhaoming', target.id);
       this.sequence = {
         active: true,
         id: 'seq_wushan_zhaoming',
         title: '巫山神女墓·昭明剑心苏醒',
-        subtitle: '初七：谢衣已死，唯余流月城暗杀者初七……但这柄昭明剑心，终将助你们斩断矩木。',
+        subtitle: '初七：这一次，我终于没有违背自己的本心……让开，让他过去！',
         completed_count: this.sequence.completed_count,
       };
       if (this.quest_stage < 810) this.quest_stage = 810;
@@ -1579,11 +1912,13 @@ export class Gujian2EngineCore {
       return this.observe({ event: 'zhaoming_heart_awakened' });
     }
 
-    // 9. 第六章：落霞坡重铸【昭明神剑】并迎战流月城廉贞祭司【华月】
+    // 9. 第六章：落霞坡重铸【昭明神剑】并迎战流月城廉贞祭司【华月】（触发原版第十一幕剧本）
     if (target.id === 'boss_huayue') {
       this.party[0].equipped_weapon = '昭明神剑';
       this.party[0].attack += 35;
       this._addItem(3602, '昭明神剑', 1);
+      this._startScriptScene('scene_ch6_huayue', target.id);
+      this.dialog.visible = false;
       this._startCombat({
         boss_id: 'boss_huayue',
         vip_monster: 6102,
@@ -1595,10 +1930,11 @@ export class Gujian2EngineCore {
       return this.observe({ event: 'combat_started:boss_huayue' });
     }
 
-    // 10. 终章：断霄岭流月城寂静之间决战【沈夜 & 心魔砺缨】
+    // 10. 终章：断霄岭流月城寂静之间决战【沈夜 & 心魔砺缨】（触发原版第十二幕剧本）
     if (target.id === 'boss_shenye') {
       if (this.quest_stage >= 950) {
-        // 已击败沈夜，直接进入大结局
+        // 已击败沈夜，直接进入大结局终幕
+        this._startScriptScene('scene_ch7_ending', target.id);
         this.sequence = {
           active: true,
           id: 'seq_grand_ending',
@@ -1610,11 +1946,13 @@ export class Gujian2EngineCore {
         this.game_cleared = true;
         return this.observe({ event: 'grand_ending_triggered' });
       }
+      this._startScriptScene('scene_ch7_shenye_pre', target.id);
+      this.dialog.visible = false;
       this._startCombat({
         boss_id: 'boss_shenye',
         vip_monster: 6103,
         enemy_name: '紫微大祭司·沈夜 & 心魔砺缨',
-        hp: 8200,
+        hp: 9800,
         shield: 320,
         telegraph_name: '矩木天罚·永夜神雷',
       });
@@ -1622,8 +1960,9 @@ export class Gujian2EngineCore {
     }
 
     if (target.id === 'altar_grand_ending') {
-      // 确保九域全部点亮
+      // 确保九域全部点亮并触发终幕原版剧本
       for (const r of this.meta.regions) this.discoveredRegions.add(r.name);
+      this._startScriptScene('scene_ch7_ending', target.id);
       this.sequence = {
         active: false,
         id: 'seq_grand_ending',
@@ -1808,7 +2147,7 @@ export class Gujian2EngineCore {
       // 阿阮在队时自动触发同伴 AI【春风化雨】群体治疗
       const aruan = this.party[3];
       if (aruan && aruan.in_team) {
-        const needHeal = this.party.some((m) => m.in_team && m.hp < m.max_hp * 0.92);
+        const needHeal = this.party.some((m) => m.in_team && m.hp < m.max_hp);
         if (needHeal) {
           for (const m of this.party) {
             if (m.in_team) m.hp = Math.min(m.max_hp, m.hp + 45);
@@ -1877,6 +2216,8 @@ export class Gujian2EngineCore {
       home: structuredClone(this.home),
       inventory: structuredClone(this.inventory),
       dialog: structuredClone(this.dialog),
+      story: structuredClone(this.story),
+      cutscene: structuredClone(this.cutscene),
       sequence: structuredClone(this.sequence),
       combat: structuredClone(this.combat),
       worldObjects: structuredClone(this.worldObjects),
@@ -1909,6 +2250,8 @@ export class Gujian2EngineCore {
     this.home = structuredClone(snap.home);
     this.inventory = structuredClone(snap.inventory);
     this.dialog = structuredClone(snap.dialog);
+    this.story = structuredClone(snap.story);
+    this.cutscene = structuredClone(snap.cutscene);
     this.sequence = structuredClone(snap.sequence);
     this.combat = structuredClone(snap.combat);
     this.worldObjects = structuredClone(snap.worldObjects);
@@ -2020,7 +2363,45 @@ export class Gujian2EngineCore {
         puppet_strikes: this.combat.puppet_strikes,
         last_combat_log: this.combat.last_combat_log,
       },
-      dialog: { ...this.dialog },
+      dialog: {
+        visible: this.dialog.visible,
+        scene_id: this.dialog.scene_id,
+        scene_title: this.dialog.scene_title,
+        subtitle: this.dialog.subtitle,
+        poem: this.dialog.poem,
+        story_cg: this.dialog.story_cg,
+        speaker: this.dialog.speaker,
+        role_id: this.dialog.role_id,
+        speaker_title: this.dialog.speaker_title,
+        emotion: this.dialog.emotion,
+        text: this.dialog.text,
+        line_index: this.dialog.line_index,
+        total_lines: this.dialog.total_lines,
+        branch_id: this.dialog.branch_id,
+        target_id: this.dialog.target_id,
+      },
+      story: {
+        active_scene_id: this.story.active_scene_id,
+        scenes_viewed_count: this.story.scenes_viewed.length,
+        scenes_viewed: [...this.story.scenes_viewed],
+        lines_read: this.story.lines_read,
+        branches_chosen: { ...this.story.branches_chosen },
+        pending_branch: this.story.pending_branch
+          ? {
+              id: this.story.pending_branch.id,
+              prompt: this.story.pending_branch.prompt,
+              options: this.story.pending_branch.options.map((o, idx) => ({
+                index: idx,
+                id: o.id,
+                label: o.label,
+              })),
+            }
+          : null,
+        alignment: { ...this.story.alignment },
+        affection: { ...this.story.affection },
+        echoes_discovered: [...this.story.echoes_discovered],
+      },
+      cutscene: { ...this.cutscene },
       sequence: { ...this.sequence },
       inventory: {
         money: this.inventory.money,
@@ -2063,6 +2444,14 @@ export class Gujian2EngineCore {
         );
       case 'interact':
         return this.interact(cmdPayload.target || null);
+      case 'step_dialog':
+        return this.stepDialog();
+      case 'choose_branch':
+        return this.chooseBranch(cmdPayload.branch_id || null, cmdPayload.option ?? 0);
+      case 'play_script':
+        return this.playScript(cmdPayload.scene_id || 'scene_ch1_parts');
+      case 'trigger_echo':
+        return this.triggerEcho(cmdPayload.echo_id || null);
       case 'switch_leader':
         return this.switchLeader(cmdPayload.index ?? 0);
       case 'allocate_astral':

@@ -11,6 +11,9 @@ import {
   NPC_DEFS as CORE_NPC_DEFS,
   PUPPET_DEFS,
   CHAPTER_QUESTS,
+  STORY_SCRIPTS,
+  STORY_BRANCHES,
+  SIDE_ECHOES,
 } from './engine_core.js';
 // 软阴影补丁：必须在任何材质首次编译前 import（副作用：改写 ShaderChunk）
 import './pcss.js';
@@ -738,9 +741,10 @@ function spawnStoryWorldObjects() {
         });
       }
     } else {
-      // 机关 / 零件箱 / 祭坛 光柱标记
+      // 机关 / 零件箱 / 祭坛 / 星海忆念记忆碑 光柱标记
       const grp = new THREE.Group();
-      const tint = wo.kind === 'mechanism' ? 0x63b3ed : 0xf6ad55;
+      const tint =
+        wo.kind === 'mechanism' ? 0x63b3ed : wo.kind === 'echo' ? 0x5ef0c4 : 0xf6ad55;
       const beam = new THREE.Mesh(
         new THREE.CylinderGeometry(0.18, 0.18, 5.5, 12, 1, true),
         new THREE.MeshBasicMaterial({
@@ -758,7 +762,9 @@ function spawnStoryWorldObjects() {
       );
       base.position.y = 0.45;
       grp.add(base);
-      const lbl = makeLabelSprite(wo.name, '#ffd76e', '按 F 交互 / 破阵');
+      const subTxt =
+        wo.kind === 'echo' ? '星海忆念 · 按 F 聆听原版支线' : '按 F 交互 / 破阵';
+      const lbl = makeLabelSprite(wo.name, wo.kind === 'echo' ? '#7fffe0' : '#ffd76e', subTxt);
       lbl.position.y = 3.6;
       grp.add(lbl);
       grp.position.set(wx, wy, wz);
@@ -1510,6 +1516,25 @@ function updateInteract() {
 }
 
 function interact() {
+  if (G.dialogOpen && G.engine.dialog.visible) {
+    // 若当前处于多分支抉择且按 F，默认选第 1 项并继续
+    if (
+      G.engine.dialog.line_index + 1 >= G.engine.dialog.total_lines &&
+      G.engine.story.pending_branch &&
+      !G.engine.story.branches_chosen[G.engine.story.pending_branch.id]
+    ) {
+      const bRes = G.engine.chooseBranch(G.engine.story.pending_branch.id, 0);
+      handleEngineEvent(bRes);
+      return;
+    }
+    const sRes = G.engine.stepDialog();
+    if (!sRes.dialog || !sRes.dialog.visible) {
+      closeDialog();
+    } else {
+      handleEngineEvent(sRes);
+    }
+    return;
+  }
   if (G.dialogOpen) {
     closeDialog();
     G.engine.interact();
@@ -1543,26 +1568,102 @@ function takePickup(pk) {
 function openEngineDialog(dlg) {
   G.dialogOpen = true;
   $('dialog').style.display = 'block';
+  $('cinemaTop').classList.add('on');
+  $('cinemaBottom').classList.add('on');
+
+  const cut = G.engine.cutscene || {};
+  $('cinemaSceneTitle').textContent =
+    (dlg.scene_title || '永夜初晗 · 剧情演绎') + (dlg.subtitle ? ` ｜ ${dlg.subtitle}` : '');
+  $('cinemaPoem').textContent = dlg.poem || cut.poem || '';
+  $('cutsceneShotBadge').textContent = `🎥 机位：${cut.shot_name || '越肩特写'} · 切镜 #${cut.camera_cuts || 1}`;
+
+  const roleKey = String(dlg.role_id || 101);
   const npcDef =
-    NPC_DEFS.find((n) => dlg.speaker.includes(n.name)) || NPC_DEFS[0];
-  $('dlgPortrait').src = (G.portraits && G.portraits[npcDef.id]) || npcDef.face;
-  $('dlgName').textContent = dlg.speaker;
+    NPC_DEFS.find((n) => n.id === roleKey || dlg.speaker.includes(n.name)) || NPC_DEFS[0];
+  $('dlgPortrait').src =
+    (G.portraits && (G.portraits[roleKey] || G.portraits[npcDef.id])) ||
+    `assets/ui/face/face_${roleKey}.png`;
+
+  const cgEl = $('dlgStoryCg');
+  if (cgEl) {
+    cgEl.src = dlg.story_cg || cut.story_cg || 'assets/ui/story/story_00.png';
+  }
+
+  $('dlgName').textContent = dlg.speaker || '乐无异';
+  $('dlgTitleTag').textContent =
+    (dlg.speaker_title ? `· ${dlg.speaker_title}` : '') +
+    (dlg.emotion ? ` 【${dlg.emotion}】` : '');
+  $('dlgLineCounter').textContent =
+    dlg.total_lines > 0
+      ? `台词 ${Math.min(dlg.line_index + 1, dlg.total_lines)} / ${dlg.total_lines}`
+      : '';
   $('dlgText').textContent = dlg.text;
+
+  // 触发说话角色的 3D 骨骼演出动作
+  if (cut.anim && cut.anim !== 'idle' && G.player && G.player.ap) {
+    G.player.ap.playAction(cut.anim === 'jump' ? 'jump' : 'attack', {
+      fadeIn: 0.08,
+      fadeOut: 0.22,
+      rate: 1.2,
+    });
+  }
+
+  // 多分支对话选项渲染
+  const brBox = $('dlgBranches');
+  brBox.innerHTML = '';
+  const pendingBr = G.engine.story.pending_branch;
+  const atLastLine = (dlg.line_index || 0) + 1 >= (dlg.total_lines || 1);
+  if (pendingBr && atLastLine && !G.engine.story.branches_chosen[pendingBr.id]) {
+    brBox.style.display = 'flex';
+    const promptDiv = document.createElement('div');
+    promptDiv.style.cssText = 'color:#ffe49e;font-size:13px;font-weight:600;margin-bottom:4px';
+    promptDiv.textContent = pendingBr.prompt;
+    brBox.appendChild(promptDiv);
+    pendingBr.options.forEach((opt, idx) => {
+      const btn = document.createElement('div');
+      btn.className = 'branchBtn';
+      btn.textContent = opt.label;
+      btn.onclick = () => {
+        const res = G.engine.chooseBranch(pendingBr.id, idx);
+        handleEngineEvent(res);
+      };
+      brBox.appendChild(btn);
+    });
+  } else {
+    brBox.style.display = 'none';
+  }
+
   const opts = $('dlgOpts');
   opts.innerHTML = '';
-  const b = document.createElement('div');
-  b.className = 'btn';
-  b.textContent = '继续 (F)';
-  b.onclick = () => {
-    closeDialog();
-    G.engine.interact();
-  };
-  opts.appendChild(b);
+  const nextBtn = document.createElement('div');
+  nextBtn.className = 'btn';
+  nextBtn.textContent =
+    (dlg.line_index || 0) + 1 < (dlg.total_lines || 1) ? '下一句 · 切镜 (F)' : '完成对白 (F)';
+  nextBtn.onclick = () => interact();
+  opts.appendChild(nextBtn);
+
+  if ((dlg.line_index || 0) + 1 < (dlg.total_lines || 1)) {
+    const skipBtn = document.createElement('div');
+    skipBtn.className = 'btn';
+    skipBtn.style.opacity = '0.78';
+    skipBtn.textContent = '跳过本幕';
+    skipBtn.onclick = () => {
+      closeDialog();
+      G.engine.interact();
+    };
+    opts.appendChild(skipBtn);
+  }
 }
 
 function closeDialog() {
   G.dialogOpen = false;
   $('dialog').style.display = 'none';
+  $('cinemaTop').classList.remove('on');
+  $('cinemaBottom').classList.remove('on');
+  if (G.camera && G.camera.fov !== 55) {
+    G.camera.fov = 55;
+    G.camera.updateProjectionMatrix();
+  }
 }
 
 // ================= HUD 与系统面板 =================
@@ -1927,17 +2028,107 @@ function sfx(kind) {
   } catch (e) {}
 }
 
+// ================= 剧本台词与 3D 过场运镜鉴赏器面板 =================
+function renderTheaterPanel() {
+  const box = $('theaterContent');
+  if (!box) return;
+  const e = G.engine;
+  const st = e.story;
+  const sceneEntries = Object.values(STORY_SCRIPTS);
+
+  box.innerHTML = `
+    <div style="margin-bottom:14px;background:rgba(201,169,97,.1);border:1px solid rgba(201,169,97,.35);border-radius:6px;padding:10px 14px">
+      <div class="prow" style="margin:2px 0">
+        <span><b>📜 剧本进度</b>：已演出的原版剧目 ${st.scenes_viewed.length} / ${sceneEntries.length} 幕 ｜ 已读原版台词 <b>${st.lines_read}</b> 句 ｜ 电影镜头切镜 <b>${e.cutscene.camera_cuts}</b> 次</span>
+      </div>
+      <div class="prow" style="margin:2px 0">
+        <span><b>💖 同伴羁绊好感</b>：闻人羽(${st.affection[102]}) · 夏夷则(${st.affection[103]}) · 阿阮(${st.affection[104]}) · 谢衣/初七(${st.affection[106]})</span>
+      </div>
+      <div class="prow" style="margin:2px 0">
+        <span><b>☯ 道心倾向</b>：仁心(${st.alignment.benevolence}) · 坚毅(${st.alignment.resolve}) · 洞明(${st.alignment.insight}) ｜ 星海忆念支线：${st.echoes_discovered.length} / ${SIDE_ECHOES.length}</span>
+      </div>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <h3 style="color:#f0dfae;font-size:14px;margin-bottom:8px">一、《古剑奇谭二》12 场主线原版剧本名场面（点击立即触发 3D 运镜实机演出）</h3>
+      ${sceneEntries
+        .map(
+          (sc) => `
+        <div class="prow" style="border-bottom:1px solid rgba(255,255,255,.07);padding:5px 0">
+          <span>
+            <b style="color:#ffe49e">${sc.title}</b> <span style="color:#8fa0b5;font-size:12px">(${sc.subtitle} · ${sc.lines.length}句台词${sc.branch_id ? ' · 含多分支抉择' : ''})</span><br>
+            <span style="color:#a8b8c8;font-size:12px;font-style:italic">“${sc.poem}”</span>
+          </span>
+          <span class="miniBtn" data-play-scene="${sc.id}">🎥 实机运镜演绎</span>
+        </div>`,
+        )
+        .join('')}
+    </div>
+
+    <div style="border-top:1px solid rgba(255,255,255,.15);padding-top:10px">
+      <h3 style="color:#7fffe0;font-size:14px;margin-bottom:8px">二、九域【星海忆念 · 原版支线】记忆回响（共 ${SIDE_ECHOES.length} 处）</h3>
+      ${SIDE_ECHOES.map(
+        (ec) => `
+        <div class="prow" style="border-bottom:1px solid rgba(255,255,255,.06);padding:4px 0">
+          <span><b>${ec.name}</b> <span style="color:#8fa0b5;font-size:12px">[区域:${ec.region}] ${st.echoes_discovered.includes(ec.id) ? '✔已收集' : ''}</span></span>
+          <span class="miniBtn" data-play-echo="${ec.id}">✨ 聆听忆念</span>
+        </div>`,
+      ).join('')}
+    </div>
+  `;
+
+  box.querySelectorAll('[data-play-scene]').forEach((btn) => {
+    btn.onclick = () => {
+      const sid = btn.dataset.playScene;
+      showPanel(null);
+      const res = e.playScript(sid);
+      handleEngineEvent(res);
+    };
+  });
+
+  box.querySelectorAll('[data-play-echo]').forEach((btn) => {
+    btn.onclick = () => {
+      const eid = btn.dataset.playEcho;
+      const ec = SIDE_ECHOES.find((x) => x.id === eid);
+      if (ec && G.player) {
+        const y = e.physics.heightAt(ec.pos[0], ec.pos[1]);
+        G.player.obj.position.set(ec.pos[0], y, ec.pos[1]);
+        e.position = [ec.pos[0], y, ec.pos[1]];
+      }
+      showPanel(null);
+      const res = e.triggerEcho(eid, true);
+      handleEngineEvent(res);
+    };
+  });
+}
+
 // ================= 输入绑定 =================
 function bindInput() {
   addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     G.keys[k] = true;
     if (G.state !== 'play') return;
+
+    // 若处于多分支剧情抉择界面，按 1/2/3 直接选择对应剧情分支
+    if (
+      G.dialogOpen &&
+      G.engine.dialog.visible &&
+      G.engine.story.pending_branch &&
+      G.engine.dialog.line_index + 1 >= G.engine.dialog.total_lines &&
+      !G.engine.story.branches_chosen[G.engine.story.pending_branch.id]
+    ) {
+      if (k === '1' || k === '2' || k === '3') {
+        const res = G.engine.chooseBranch(G.engine.story.pending_branch.id, Number(k) - 1);
+        handleEngineEvent(res);
+        return;
+      }
+    }
+
     if (k === '1') switchActiveHero(0);
     if (k === '2') switchActiveHero(1);
     if (k === '3') switchActiveHero(2);
     if (k === '4') switchActiveHero(3);
-    if (k === 'f') interact();
+    if (k === 'f' || (G.dialogOpen && k === ' ')) interact();
     if (k === 'j') performCombatMove('attack');
     if (k === 'k') performCombatMove('heavy');
     if (k === 'l') performCombatMove('skill');
@@ -1945,6 +2136,10 @@ function bindInput() {
     if (k === 'g') performCombatMove('guard');
     if (k === 'u') performCombatMove('ultimate');
     if (k === 'p') toggleAutoPilot();
+    if (k === 'v') {
+      renderTheaterPanel();
+      showPanel(G.panelOpen === 'theaterPanel' ? null : 'theaterPanel');
+    }
     if (k === 'y') {
       renderSystemPanel();
       showPanel(G.panelOpen === 'sysPanel' ? null : 'sysPanel');
@@ -2005,6 +2200,12 @@ function bindInput() {
   $('btnAutoStart').onclick = () => startGame(false, true);
   $('btnCont').onclick = () => startGame(true, false);
   $('btnAutoPilot').onclick = () => toggleAutoPilot();
+  if ($('btnTheaterTop')) {
+    $('btnTheaterTop').onclick = () => {
+      renderTheaterPanel();
+      showPanel(G.panelOpen === 'theaterPanel' ? null : 'theaterPanel');
+    };
+  }
   $('btnSystemPanel').onclick = () => {
     renderSystemPanel();
     showPanel(G.panelOpen === 'sysPanel' ? null : 'sysPanel');
@@ -2013,6 +2214,7 @@ function bindInput() {
   $('btnHelpTop').onclick = () => showPanel('helpPanel');
   $('closePanel').onclick = () => showPanel(null);
   $('closePanelSys').onclick = () => showPanel(null);
+  if ($('closePanelTheater')) $('closePanelTheater').onclick = () => showPanel(null);
   $('closePanel2').onclick = () => showPanel(null);
   $('closePanel3').onclick = () => showPanel(null);
 }
@@ -2058,12 +2260,44 @@ function loop(t) {
   updateBossHud();
 
   const p = G.player.obj.position;
-  const cx = p.x - Math.sin(G.yaw) * Math.cos(G.pitch) * G.dist;
-  const cz = p.z - Math.cos(G.yaw) * Math.cos(G.pitch) * G.dist;
-  const cy = p.y + 2 + Math.sin(G.pitch) * G.dist;
-  const ch = G.world.heightAt(cx, cz);
-  G.camera.position.lerp(_np.set(cx, Math.max(cy, ch + 1.2), cz), Math.min(1, dt * 10));
-  G.camera.lookAt(p.x, p.y + (G.player.height || 1.8) * 0.85, p.z);
+  if (G.dialogOpen && G.engine.dialog.visible && G.engine.cutscene && G.engine.cutscene.active) {
+    // 电影级 3D 过场运镜导演系统 (CutsceneDirector)
+    const cut = G.engine.cutscene;
+    const targetFov = cut.fov || 40;
+    if (Math.abs(G.camera.fov - targetFov) > 0.1) {
+      G.camera.fov += (targetFov - G.camera.fov) * Math.min(1, dt * 6);
+      G.camera.updateProjectionMatrix();
+    }
+    let focusPos = p;
+    if (cut.focus === 'npc' && G.nearNPC && G.nearNPC.obj) {
+      focusPos = G.nearNPC.obj.position;
+    }
+    const baseYaw = G.player.obj.rotation.y + Math.PI + now * (cut.orbitSpeed || 0.08);
+    const dist = cut.dist || 3.4;
+    const side = cut.sideOffset || 0;
+    const cx = focusPos.x + Math.sin(baseYaw) * dist + Math.cos(baseYaw) * side;
+    const cz = focusPos.z + Math.cos(baseYaw) * dist - Math.sin(baseYaw) * side;
+    const cy = focusPos.y + (cut.height || 1.6);
+    const ch = G.world.heightAt(cx, cz);
+    const shakeX = cut.shake ? (Math.sin(now * 38) * cut.shake * 0.15) : 0;
+    const shakeY = cut.shake ? (Math.cos(now * 44) * cut.shake * 0.12) : 0;
+    G.camera.position.lerp(
+      _np.set(cx + shakeX, Math.max(cy + shakeY, ch + 0.65), cz),
+      Math.min(1, dt * 4.5),
+    );
+    G.camera.lookAt(focusPos.x, focusPos.y + (cut.lookHeight || 1.42), focusPos.z);
+  } else {
+    if (Math.abs(G.camera.fov - 55) > 0.2) {
+      G.camera.fov += (55 - G.camera.fov) * Math.min(1, dt * 6);
+      G.camera.updateProjectionMatrix();
+    }
+    const cx = p.x - Math.sin(G.yaw) * Math.cos(G.pitch) * G.dist;
+    const cz = p.z - Math.cos(G.yaw) * Math.cos(G.pitch) * G.dist;
+    const cy = p.y + 2 + Math.sin(G.pitch) * G.dist;
+    const ch = G.world.heightAt(cx, cz);
+    G.camera.position.lerp(_np.set(cx, Math.max(cy, ch + 1.2), cz), Math.min(1, dt * 10));
+    G.camera.lookAt(p.x, p.y + (G.player.height || 1.8) * 0.85, p.z);
+  }
 
   G.world.update(p.x, p.z);
 
